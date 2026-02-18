@@ -84,7 +84,10 @@ class Jepa(pl.LightningModule):
         return [image_size[0] * 14 // patch_size, image_size[1] * 14 // patch_size]
     
     def get_input(self, batch):
-        x = batch
+        for k, v in batch.items():
+            x = batch["images"]
+            b, f, c, h, w = x.shape # [B, 1, 3, 256, 256]
+            x = x.reshape(b, f*c, h, w)
         return x.float()
 
     def entropy_loss_weight_scheduling(self):

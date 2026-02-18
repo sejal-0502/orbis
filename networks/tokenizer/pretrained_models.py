@@ -3,7 +3,6 @@ import timm
 import random
 from torch import nn
 
-from modules import masks
 from typing import Tuple, Union
 from timm.models.vision_transformer import VisionTransformer
 

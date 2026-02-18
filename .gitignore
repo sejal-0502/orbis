@@ -1,5 +1,7 @@
 # Ignore all log files
 *.log
+logs_tk/tokenizer_288x512
+logs_wm/orbis_288x512
 
 # Ignore temporary folders
 /tmp/
@@ -14,3 +16,9 @@
 
 # Ignore multiple .yaml version
 configs/stage1_jepa075.yaml
+
+# Ignore py_cache
+__pycache__/
+
+# Ignore .pyc 
+*.pyc

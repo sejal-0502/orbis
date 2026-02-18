@@ -54,15 +54,16 @@ data:
     batch_size: 4
     num_workers: 2
     train:
-      target: data.custom.MultiHDF5Dataset
+      target: data.custom_multiframe.MultiHDF5DatasetMultiFrameFixedFrameRate
       params:
         hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/train_10hz_small.txt
         size: 256
-        aug: resize_center
-        scale_min: 0.15
-        scale_max: 0.5
+        num_frames: 1
+        frame_rate: 10
     validation:
-      target: data.custom.MultiHDF5Dataset
+      target: data.custom_multiframe.MultiHDF5DatasetMultiFrameFixedFrameRate
       params:
         hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/val_10hz.txt
         size: 256
+        num_frames: 1
+        frame_rate: 10
