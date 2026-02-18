@@ -121,9 +121,15 @@ def get_parser(**parser_kwargs):
         help="check validation every n epochs",
     )
     parser.add_argument(
+        "--val_check_interval",
+        type=float,
+        default=0.50,
+        help="Validation interval inside epoch (float=fraction of epoch, int=steps)"
+    )
+    parser.add_argument(
         "--num_epochs",
         type=int,
-        default=100,
+        default=15,
         help="number of epochs",
     )
     parser.add_argument("-p", "--project", help="name of new or path to existing project")
@@ -295,6 +301,7 @@ if __name__ == "__main__":
     trainer_kwargs["devices"] = opt.n_gpus
     trainer_kwargs["num_nodes"] = opt.n_nodes
     trainer_kwargs["check_val_every_n_epoch"] = opt.check_val_every_n_epoch
+    trainer_kwargs["val_check_interval"] = opt.val_check_interval
     trainer_kwargs["max_epochs"] = opt.num_epochs
     trainer_kwargs["precision"] = config.model.get("precision", "16-mixed")
     trainer_kwargs["gradient_clip_val"] = config.model.get("grad_clip", None)

@@ -421,6 +421,42 @@ class MultiHDF5DatasetMultiFrameRandomizeFrameRate(MultiHDF5DatasetMultiFrameIdx
                     num_samples={len(self)}, size={self.size}, num_frames={self.num_frames}, 
                     stored_data_frame_rate={self.stored_data_frame_rate}, frame_rates={self.frame_rates}, frame_intervals={self.frame_intervals}, frame_rate_weights={self.frame_rate_weights})'''
 
+class MultiHDF5DatasetMultiFrameFixedFrameRate(MultiHDF5DatasetMultiFrameIdxMapping):
+    """
+    Enable the model to sample from fixed frame interval (eg. 10Hz). It also returns the frame rate and frame interval used for each sample.
+    """
+    def __init__(self, *, size, hdf5_paths_file, num_frames, frame_rate, **kwargs):
+        """
+        frame_intervals set in the config file along with the frame rate.
+        
+        """
+        self.hdf5_paths_file = hdf5_paths_file
+        self.num_frames = num_frames
+        self.frame_rate = frame_rate
+        self.stored_data_frame_rate = frame_rate
+        self.frame_intervals = [1]
+        
+        super().__init__(size, hdf5_paths_file, num_frames, frame_rate_multiplier=1, **kwargs)
+        # del self.frame_interval
+    
+    def get_images_and_indices(self, idx, frame_interval):
+        file, key, start_frame = self.index_to_starting_frame_map[idx]
+        if len(file[key])<=start_frame+self.num_frames*frame_interval:
+            raise ValueError(f'file_index: {idx}, key: {key}, start_frame: {start_frame}, frame_interval: {frame_interval}, video length: {len(file[key])}, frames_needed_after: {self.num_frames*frame_interval}')
+        images = [Image.fromarray(file[key][start_frame+i*frame_interval]) for i in range(self.num_frames)]
+        return images, (file.filename, key, start_frame)
+    
+    def __getitem__(self, idx):
+        # return images and frame interval
+        frame_interval = self.frame_interval
+        images, _ = self.get_images_and_indices(idx, frame_interval)
+        images = self.apply_transforms(images)
+        return {'images': images}
+
+    def __str__(self):
+        return f'''{self.__class__.__name__}({self.hdf5_paths_file},
+                    num_samples={len(self)}, size={self.size}, num_frames={self.num_frames}, 
+                    stored_data_frame_rate={self.stored_data_frame_rate}, frame_rates={self.frame_rate}, frame_intervals={self.frame_intervals})'''
 
 
 def get_obj_from_str(string, reload=False):

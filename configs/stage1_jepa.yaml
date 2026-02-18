@@ -1,0 +1,68 @@
+model:
+  base_learning_rate: 8.0e-07
+  adjust_learning_rate: true
+  static_graph: true
+  target: models.first_stage.jepa.Jepa
+  params:
+    monitor: val/rec_loss
+    grad_acc_steps: 16
+    cont_ratio_trainig: 0.0
+    min_lr_multiplier: 0.1
+    ema_momentum: 0.996
+    warmup_steps: 5000
+    beta_1: 0.5
+    beta_2: 0.9
+    only_decoder: false
+    scale_equivariance: null #[[2], [2]]  # or none
+    context_encoder_config:
+      target: networks.tokenizer.pretrained_models.Encoder
+      params:
+        resolution: 
+        - 256
+        - 256
+        pretrained_encoder: MAE
+        patch_size: 16
+        z_channels: 768
+        mask_ratio : 0.5
+        masking : true
+        normalize_embedding: true
+    target_encoder_config:
+      target: networks.tokenizer.pretrained_models.Encoder
+      params:
+        resolution: 
+        - 256
+        - 256
+        pretrained_encoder: MAE
+        patch_size: 16
+        z_channels: 768
+        mask_ratio : 0.0
+        masking : false
+        normalize_embedding: true
+    predictor_config:
+      target: networks.tokenizer.ae.Predictor
+      params:
+        depth: 2
+        heads: 8
+        mlp_dim: 3072
+        predictor_embed_dim: 384
+        normalize_embedding: true
+    
+    
+data:
+  target: data.datamodule.DataModuleFromConfig
+  params:
+    batch_size: 4
+    num_workers: 2
+    train:
+      target: data.custom.MultiHDF5Dataset
+      params:
+        hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/train_10hz_small.txt
+        size: 256
+        aug: resize_center
+        scale_min: 0.15
+        scale_max: 0.5
+    validation:
+      target: data.custom.MultiHDF5Dataset
+      params:
+        hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/val_10hz.txt
+        size: 256

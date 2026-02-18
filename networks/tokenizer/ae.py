@@ -744,6 +744,25 @@ class Encoder(nn.Module):
         h = self.conv_out(h)
         return h
 
+class Predictor(nn.Module):
+    def __init__(self, predictor_embed_dim: int, depth: int, heads: int, mlp_dim: int, dim_head: int = 64, 
+                 normalize_embedding: bool = True) -> None:
+        super().__init__()
+
+        self.transformer = Transformer(predictor_embed_dim, depth, heads, dim_head, mlp_dim)
+
+        self.apply(init_weights)
+
+    def forward(self, masked_tokens, pos_embed=None) -> torch.FloatTensor:
+        
+        x = masked_tokens
+
+        if pos_embed is not None:
+            x = x + pos_embed
+
+        x = self.transformer(x) # [B, N, D]
+        
+        return x
 
 class Decoder(nn.Module):
     def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
@@ -849,4 +868,6 @@ class Decoder(nn.Module):
         h = self.conv_out(h)
 
         return h
+    
+
     

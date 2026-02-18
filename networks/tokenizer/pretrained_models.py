@@ -1,13 +1,58 @@
 import torch
 import timm
+import random
 from torch import nn
 
-
+from modules import masks
 from typing import Tuple, Union
+from timm.models.vision_transformer import VisionTransformer
+
+class VisionTransformerWithPretrainedWts(VisionTransformer):
+    def __init__(self, patch_size, img_size, masking, mask_ratio,  **kwargs):
+        """
+        pretrained_cfg: pass the same kwargs you’d pass to timm.create_model
+
+        """
+        super().__init__(img_size=img_size,**kwargs)
+        self.num_patches = patch_size * patch_size
+        self.masking = masking
+        self.mask_ratio = mask_ratio
+
+        self.patch_embed.proj = nn.Conv2d(3, 768, kernel_size=patch_size, stride=patch_size)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, self.embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, self.embed_dim))
+
+    def forward_features(self, x):
+        B = x.size(0)
+        x = self.patch_embed.proj(x)                    
+        x = x.flatten(2).transpose(1, 2)   # [B, N, D]
+
+        if self.masking:
+            num_patches = x.shape[1]
+            num_masks = int(self.mask_ratio * num_patches)     
+            mask_indices_list = []            
+            for b in range(B):
+                indices = random.sample(range(num_patches), num_masks)
+                x[b, indices, :] = self.mask_token.to(dtype=x.dtype, device=x.device)
+                mask_indices_list.append(indices)
+            mask_indices = torch.tensor(mask_indices_list, dtype=torch.long, device=x.device) # [B, N_masks]
+        else:
+            mask_indices = None
+        
+        x = x + self.pos_embed.to(x.device)
+
+        for blk in self.blocks:
+            x = blk(x)
+
+        x = self.norm(x)
+
+        return x, mask_indices
 
 class Encoder(nn.Module):
     def __init__(
         self, 
+        masking,
+        mask_ratio,
         resolution: Union[Tuple[int, int], int], 
         channels: int = 3, 
         pretrained_encoder = 'MAE',
@@ -25,6 +70,9 @@ class Encoder(nn.Module):
         self.normalize_embedding = normalize_embedding
         self.z_channels = z_channels
         self.e_dim = e_dim
+
+        self.masking = masking
+        self.mask_ratio = mask_ratio
         
         self.init_transformer(pretrained_encoder)
 
@@ -49,18 +97,22 @@ class Encoder(nn.Module):
             pretrained_encoder_model = 'timm/vit_large_patch16_224'
        
 
-        self.encoder = timm.create_model(pretrained_encoder_model, img_size=self.image_size, patch_size=self.patch_size, pretrained=False, dynamic_img_size=True).train()
+        # self.encoder = timm.create_model(pretrained_encoder_model, img_size=self.image_size, patch_size=self.patch_size, pretrained=False, dynamic_img_size=True).train()
         pretrained_model = timm.create_model(pretrained_encoder_model, img_size=self.image_size, patch_size=self.patch_size, pretrained=True)
-        """Initialize weights of target_model with weights from source_model."""
-        with torch.no_grad():
-            for target_param, source_param in zip(self.encoder.parameters(), pretrained_model.parameters()):
-                target_param.data.copy_(source_param.data)
+        state_dict = pretrained_model.state_dict()
+        self.encoder = VisionTransformerWithPretrainedWts(patch_size=self.patch_size, img_size=self.image_size, 
+                                                          masking=self.masking, mask_ratio=self.mask_ratio) 
+        state_dict['pos_embed'] = state_dict['pos_embed'][:, 1:, :]
 
-        # Clean up
-        del pretrained_model
+        missing, unexpected = self.encoder.load_state_dict(state_dict, strict=False)
+
+        print(f"Loaded with {len(missing)} missing keys and {len(unexpected)} unexpected keys")
+        print("Missing keys:")
+        print(missing)
+        print("Unexpected Keys: ")
+        print(unexpected)
     
     def forward(self, img: torch.FloatTensor) -> torch.FloatTensor:
-        h = self.encoder.forward_features(img)[:,1:]
-        h = h.permute(0, 2, 1).contiguous()
-        h = h.reshape(h.shape[0], -1, img.size(2)//self.patch_size, img.size(3)//self.patch_size)
-        return h
+        h, mask_indices = self.encoder.forward_features(img) # [B, N, D]
+        
+        return h, mask_indices

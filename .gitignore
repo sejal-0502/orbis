@@ -1,0 +1,16 @@
+# Ignore all log files
+*.log
+
+# Ignore temporary folders
+/tmp/
+/build/
+/dist/
+
+# Ignore all txt files
+*.txt
+
+# Ignore all job files
+*.sbatch
+
+# Ignore multiple .yaml version
+configs/stage1_jepa075.yaml
