@@ -182,3 +182,93 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 f"{split}/logits_fake": logits_fake.detach().mean(),
             }
             return d_loss, log
+
+class MAEReconstructionLoss(nn.Module):
+    def __init__(
+        self,
+        codebook_weight=1.0,
+        pixelloss_weight=1.0,
+        entropy_loss_weight=1.0,
+        l1_loss_weight=1.0,
+        l2_loss_weight=0.0,
+        perceptual_weight=1.0,
+        warmup_steps=1000,
+        beta_1=0.5,
+        beta_2=0.9
+    ):
+        super().__init__()
+
+        self.codebook_weight = codebook_weight
+        self.pixel_weight = pixelloss_weight
+        self.entropy_loss_weight = entropy_loss_weight
+        self.l1_loss_weight = l1_loss_weight
+        self.l2_loss_weight = l2_loss_weight
+        self.perceptual_weight = perceptual_weight
+        self.norm_pix_loss = False
+
+        self.warmup_steps = warmup_steps
+        self.beta_1 = beta_1
+        self.beta_2 = beta_2
+
+        # Perceptual loss
+        self.perceptual_loss = LPIPS().eval()
+
+    def forward(
+        self, codebook_entropy_losses, distill_loss, inputs, reconstructions, mask,
+        optimizer_idx, global_step, last_layer=None, cond=None, split="train"
+    ):
+        codebook_loss, entropy_loss = codebook_entropy_losses
+
+        if optimizer_idx == 0:
+            # Reconstruction and Perceptual Loss
+            # rec_loss = torch.tensor(0.0, device=distill_loss.device)
+            # p_loss = torch.tensor(0.0, device=distill_loss.device)
+            
+            if isinstance(inputs, list):
+                for idx, (input, recon) in enumerate(zip(inputs, reconstructions)):
+                    se_weight = 1 if idx == 0 else self.se_weight
+                    l1 = torch.abs(inputs - reconstructions)
+                    l1 = l1 * mask
+                    l1 = l1.sum() / mask.sum()
+
+                    l2 = (reconstructions - inputs) ** 2
+                    l2 = l2 * mask
+                    l2 = l2.sum() / mask.sum()
+                    
+                    rec_loss += (self.l1_loss_weight * l1 + self.l2_loss_weight * l2) * se_weight
+                    if self.perceptual_weight > 0:
+                        p_loss += self.perceptual_loss(input, recon).mean() * se_weight
+            else:
+                l1 = torch.abs(inputs - reconstructions)
+                l1 = l1 * mask
+                l1 = l1.sum() / mask.sum()
+
+                l2 = (reconstructions - inputs) ** 2
+                l2 = l2 * mask
+                l2 = l2.sum() / mask.sum()
+
+                rec_loss = self.l1_loss_weight * l1 + self.l2_loss_weight * l2
+                if self.perceptual_weight > 0:
+                    p_loss = self.perceptual_loss(inputs, reconstructions).mean()
+                    
+            nll_loss = rec_loss + self.perceptual_weight * p_loss
+                 
+            reconstruction = reconstructions[0] if isinstance(reconstructions, list) else reconstructions
+            
+            loss = nll_loss
+            loss += self.codebook_weight * codebook_loss.mean()
+            if entropy_loss is not None:
+                loss += self.entropy_loss_weight * entropy_loss.mean()
+            
+            log = {
+                f"{split}/total_loss": loss.detach().mean(),
+                f"{split}/quant_loss": codebook_loss.detach().mean(),
+                f"{split}/nll_loss": nll_loss.detach().mean(),
+                f"{split}/rec_loss": rec_loss.detach().mean(),
+                f"{split}/p_loss": p_loss.detach().mean(),
+            }
+            if entropy_loss is not None:
+                log[f"{split}/entropy_loss"] = entropy_loss.detach().mean()
+                log[f"{split}/entropy_loss_weight"] = torch.tensor(self.entropy_loss_weight)
+
+            return loss, log

@@ -16,6 +16,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.profilers import PyTorchProfiler
 from pytorch_lightning.strategies import DDPStrategy
+from callbacks import CodebookTSNELogger
 
 from util import *
 
@@ -151,7 +152,7 @@ def get_parser(**parser_kwargs):
     parser.add_argument(
         "--tsne_epoch_frequency", 
         type=int, 
-        default=0,
+        default=0.5,
     )
     parser.add_argument(
         "-s",

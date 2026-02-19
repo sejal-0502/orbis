@@ -764,8 +764,8 @@ class Predictor(nn.Module):
         
         return x
 
-class Decoder(nn.Module):
-    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
+class MAE_Decoder(nn.Module):
+    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks, patch_size,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, z_channels, give_pre_end=False, **ignorekwargs):
         super().__init__()
@@ -776,7 +776,12 @@ class Decoder(nn.Module):
         self.resolution = resolution
         self.in_channels = in_channels
         self.give_pre_end = give_pre_end
+        self.patch_size = patch_size
 
+        self.num_patches = (resolution // patch_size) ** 2
+        self.mask_tokens = nn.Parameter(torch.randn(1, 1, z_channels))
+        self.pos_embed_dec = nn.Parameter(torch.zeros(1, self.num_patches, z_channels)) 
+        
         # compute in_ch_mult, block_in and curr_res at lowest res
         in_ch_mult = (1,)+tuple(ch_mult)
         block_in = ch*ch_mult[self.num_resolutions-1]
@@ -835,15 +840,26 @@ class Decoder(nn.Module):
                                         stride=1,
                                         padding=1)
 
-    def forward(self, z):
+    def forward(self, x, ids_restore):
         #assert z.shape[1:] == self.z_shape[1:]
-        self.last_z_shape = z.shape
+        B, N_visible, D = x.shape
+        N_full = ids_restore.shape[1]
+
+        mask_tokens = self.mask_tokens.expand(B, N_full - N_visible, -1)
+        x_full = torch.cat([x, mask_tokens], dim=1) 
+        x = x_full.gather(1, index=ids_restore.unsqueeze(-1).expand(-1, -1, D))  
+        
+        # add pos embed
+        x = x + self.pos_embed_dec
+
+        H_dec = W_dec = self.resolution // self.patch_size
+        x = x.reshape(B, H_dec, W_dec, D).permute(0, 3, 1, 2).contiguous()
 
         # timestep embedding
         temb = None
 
         # z to block_in
-        h = self.conv_in(z)
+        h = self.conv_in(x)
 
         # middle
         h = self.mid.block_1(h, temb)
@@ -858,8 +874,7 @@ class Decoder(nn.Module):
                     h = self.up[i_level].attn[i_block](h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
-
-        # end
+        
         if self.give_pre_end:
             return h
 
@@ -868,6 +883,4 @@ class Decoder(nn.Module):
         h = self.conv_out(h)
 
         return h
-    
-
     

@@ -18,7 +18,7 @@ logs_wm/orbis_288x512
 configs/stage1_jepa075.yaml
 
 # Ignore py_cache
-__pycache__/
+module/__pycache__
 
 # Ignore .pyc 
 *.pyc
