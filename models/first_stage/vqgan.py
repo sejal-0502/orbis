@@ -179,6 +179,180 @@ class VQModel(pl.LightningModule):
         log["reconstructions"] = xrec
         return log
 
+class VQModel_multiframes(pl.LightningModule):
+    """
+    VQGAN model: vector-quantized autoencoder with adversarial training.
+    """
+    
+    def __init__(
+        self,
+        encoder_config,
+        decoder_config,
+        quantizer_config,
+        loss_config,
+        grad_acc_steps=1,
+        cont_ratio_trainig= 0.0,
+        ignore_keys=None,
+        monitor=None,
+        entropy_loss_weight_scheduler_config=None,
+        min_lr_multiplier=0.1,
+        only_decoder=False,
+        scale_equivariance=None,
+    ):
+        super().__init__()
+
+        ignore_keys = ignore_keys or []
+        self.automatic_optimization = False
+        self.norm_pix_loss = False
+        self.grad_acc_steps = grad_acc_steps
+        self.monitor = monitor
+        self.cont_ratio_trainig = cont_ratio_trainig
+        self.only_decoder=only_decoder
+        self.min_lr_multiplier = min_lr_multiplier
+        
+        assert (not scale_equivariance) or len(scale_equivariance) == 2, "if defined, scale_equivariance should be a list of two lists"
+        self.scale_equivariance = scale_equivariance
+
+        # Decoder uses encoder params if none provided
+        if not hasattr(decoder_config, "params"):
+            decoder_config.params = encoder_config.params
+
+        # Instantiate core components
+        self.encoder = instantiate_from_config(encoder_config)
+        self.decoder = instantiate_from_config(decoder_config)
+        self.quantize = instantiate_from_config(quantizer_config)
+        self.loss = instantiate_from_config(loss_config)
+        self.entropy_loss_weight_scheduler = instantiate_from_config(entropy_loss_weight_scheduler_config)
+
+        # Convolutional layers for quantization
+        self.quant_conv = nn.Conv2d(encoder_config.params["z_channels"], quantizer_config.params["e_dim"], 1)
+        self.post_quant_conv = nn.Conv2d(quantizer_config.params["e_dim"], decoder_config.params["z_channels"], 1)
+
+        self.encoder_normalize_embedding = encoder_config.params.get("normalize_embedding", False)
+        self.quantizer_normalize_embedding = quantizer_config.params.get("normalize_embedding", False)
+
+        self.if_distill_loss = False if loss_config.params.get('distill_loss_weight', 0.0) == 0.0 else True
+        
+        # Image and patch size
+        self.image_size = encoder_config.params["resolution"]
+        self.patch_size = encoder_config.params["patch_size"]
+    
+    def get_input(self, batch):
+        for k, v in batch.items():
+            x = batch["images"]
+            b, f, c, h, w = x.shape # [B, 2, 3, 256, 256]
+            
+            x1 = x[:, 0] # [B, 3, 256, 256]
+            x2 = x[:, 1]
+            
+        return x1.float(), x2.float()
+
+    def entropy_loss_weight_scheduling(self):
+        self.loss.entropy_loss_weight = self.entropy_loss_weight_scheduler(self.global_step)
+
+    def encode(self, x1, x2):
+        h = self.encoder(x1, x2)
+        h = self.quant_conv(h)
+        if self.encoder_normalize_embedding:
+            h = F.normalize(h, p=2, dim=1)
+        ret = self.quantize(h)
+        # ret["continuous"] = h
+        return ret
+        
+    def decode(self, quant):
+        # distill_conv_out = self.post_quant_conv_distill(quant)
+        quant2 = self.post_quant_conv(quant)
+        rec = self.decoder(quant2)
+        return rec
+    
+    def forward(self, input1, input2):
+        encoded = self.encode(input1, input2)
+        rec = self.decode(encoded["quantized"])
+        return rec, (encoded['quantization_loss'], encoded['entropy_loss'])
+    
+    def get_warmup_scheduler(self, optimizer, warmup_steps, min_lr_multiplier):
+        min_lr = self.learning_rate * min_lr_multiplier
+        total_steps = self.trainer.max_epochs * self.num_iters_per_epoch
+        def lr_lambda(step):
+            if step < warmup_steps:
+                # Linear warmup
+                return step/warmup_steps
+            # After warmup_steps, we just return 1. This could be modified to implement your own schedule
+            else:
+                return 1.0       
+        
+        return LambdaLR(optimizer, lr_lambda)
+
+    def configure_optimizers(self):
+        lr = self.learning_rate
+        opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
+                                  list(self.decoder.parameters())+
+                                  list(self.quantize.parameters())+
+                                  list(self.quant_conv.parameters())+
+                                  list(self.post_quant_conv.parameters()),
+                                  lr=lr, betas=(self.loss.beta_1, self.loss.beta_2))
+        
+        scheduler_ae_warmup = self.get_warmup_scheduler(opt_ae, self.loss.warmup_steps, self.min_lr_multiplier)        
+
+        return [opt_ae], [scheduler_ae_warmup]
+    
+    def validation_step(self, batch, batch_idx):
+        x1, x2 = self.get_input(batch)
+        xrec, qloss = self(x1, x2)
+
+        distill_loss = None
+        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x2, xrec, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="val")
+        self.log("val/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+
+        rec_loss = log_dict_ae["val/rec_loss"]
+        self.log("val/rec_loss", rec_loss,
+                   prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+
+    def training_step(self, batch, batch_idx):
+        self.entropy_loss_weight_scheduling()
+        self.log("train/enropy_loss_weight", self.loss.entropy_loss_weight, 
+                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+        opt_ae = self.optimizers()
+        scheduler_ae_warmup = self.lr_schedulers()
+        
+        x1, x2 = self.get_input(batch)
+        
+        xrec, qloss = self(x1, x2)
+
+        distill_loss = None
+
+        optimizer_idx = 0
+        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x2, xrec, optimizer_idx, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+
+        aeloss = aeloss / self.grad_acc_steps
+        self.manual_backward(aeloss) 
+        if (batch_idx+1) % self.grad_acc_steps == 0:
+            opt_ae.step()
+            opt_ae.zero_grad()
+            scheduler_ae_warmup.step()
+
+    def get_last_layer(self):
+        try:
+            return self.decoder.conv_out.weight
+        except:
+            return None
+        
+    def log_images(self, batch, **kwargs):
+        log = dict()
+        x1, x2 = self.get_input(batch)
+        x1 = x1.to(self.device)
+        x2 = x2.to(self.device)
+        xrec, _ = self(x1, x2)
+        log["input_t"] = x1
+        log["input_t+1"] = x2
+        log["reconstruction_t+1"] = xrec
+        return log
+
 
 class VQModelIF(VQModel):
     """

@@ -2,7 +2,7 @@ model:
   base_learning_rate: 8.0e-07
   adjust_learning_rate: true
   static_graph: true
-  target: models.first_stage.vqgan.VQModel
+  target: models.first_stage.vqgan.VQModel_multiframes
   params:
     monitor: val/rec_loss
     grad_acc_steps: 16
@@ -11,7 +11,7 @@ model:
     only_decoder: false
     scale_equivariance: null # [[2], [2]]
     encoder_config:
-      target: networks.tokenizer.pretrained_models_mae.Encoder
+      target: networks.tokenizer.pretrained_models_mae.Encoder_multiframes
       params:
         pretrained_encoder: MAE
         resolution: 256
@@ -79,14 +79,14 @@ data:
     train:
       target: data.custom_multiframe.MultiHDF5DatasetMultiFrameFixedFrameRate
       params:
-        hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/train_10hz_small.txt
+        hdf5_paths_file: /pfs/work9/workspace/scratch/fr_sm793-hierabis/data/h5_files/train/day_clear/10hz/train_10hz_small.txt
         size: 256
-        num_frames: 1
+        num_frames: 2
         frame_rate: 10
     validation:
       target: data.custom_multiframe.MultiHDF5DatasetMultiFrameFixedFrameRate
       params:
-        hdf5_paths_file: /work/dlclarge2/mutakeks-titok/Thesis/dataset_bdd100k/h5_data/val_10hz.txt
+        hdf5_paths_file: /pfs/work9/workspace/scratch/fr_sm793-hierabis/data/h5_files/val/day_clear/10hz/val_10hz.txt
         size: 256
-        num_frames: 1
+        num_frames: 2
         frame_rate: 10
