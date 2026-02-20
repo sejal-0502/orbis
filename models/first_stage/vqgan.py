@@ -56,8 +56,8 @@ class VQModel(pl.LightningModule):
         self.entropy_loss_weight_scheduler = instantiate_from_config(entropy_loss_weight_scheduler_config)
 
         # Convolutional layers for quantization
-        self.quant_conv = nn.Linear(encoder_config.params["z_channels"], quantizer_config.params["e_dim"], 1)
-        self.post_quant_conv = nn.Linear(quantizer_config.params["e_dim"], decoder_config.params["z_channels"], 1)
+        self.quant_conv = nn.Conv2d(encoder_config.params["z_channels"], quantizer_config.params["e_dim"], 1)
+        self.post_quant_conv = nn.Conv2d(quantizer_config.params["e_dim"], decoder_config.params["z_channels"], 1)
 
         self.encoder_normalize_embedding = encoder_config.params.get("normalize_embedding", False)
         self.quantizer_normalize_embedding = quantizer_config.params.get("normalize_embedding", False)
@@ -79,29 +79,25 @@ class VQModel(pl.LightningModule):
         self.loss.entropy_loss_weight = self.entropy_loss_weight_scheduler(self.global_step)
 
     def encode(self, x):
-        h, mask, ids_restore = self.encoder(x)
+        h = self.encoder(x)
         h = self.quant_conv(h)
-        
-        h = h.unsqueeze(1)
         if self.encoder_normalize_embedding:
             h = F.normalize(h, p=2, dim=1)
         ret = self.quantize(h)
-        ret["quantized"] = ret["quantized"].squeeze(1)
-
-        return ret, mask, ids_restore
+        # ret["continuous"] = h
+        return ret
         
-    def decode(self, quant, ids_restore):
+    def decode(self, quant):
         # distill_conv_out = self.post_quant_conv_distill(quant)
         quant2 = self.post_quant_conv(quant)
-        rec = self.decoder(quant2, ids_restore)
+        rec = self.decoder(quant2)
         return rec
     
     def forward(self, input):
-        encoded, mask, ids_restore = self.encode(input)
-        rec = self.decode(encoded["quantized"], ids_restore)
-        return rec, (encoded['quantization_loss'], encoded['entropy_loss']), mask
+        encoded = self.encode(input)
+        rec = self.decode(encoded["quantized"])
+        return rec, (encoded['quantization_loss'], encoded['entropy_loss'])
     
-
     def get_warmup_scheduler(self, optimizer, warmup_steps, min_lr_multiplier):
         min_lr = self.learning_rate * min_lr_multiplier
         total_steps = self.trainer.max_epochs * self.num_iters_per_epoch
@@ -130,18 +126,16 @@ class VQModel(pl.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch)
-        xrec, qloss, mask = self(x)
+        xrec, qloss = self(x)
 
         distill_loss = None
+        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x, xrec, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="val")
+        self.log("val/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
 
-        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x, xrec, mask, 0, self.global_step, last_layer=None, 
-                                        cond=None, split="val")
-
-        self.log("train/ae_loss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-
-        return self.log_dict
-
+        rec_loss = log_dict_ae["val/rec_loss"]
+        self.log("val/rec_loss", rec_loss,
+                   prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
 
     def training_step(self, batch, batch_idx):
         self.entropy_loss_weight_scheduling()
@@ -152,15 +146,15 @@ class VQModel(pl.LightningModule):
         scheduler_ae_warmup = self.lr_schedulers()
         
         x = self.get_input(batch)
-        xrec, qloss, mask = self(x)
+        
+        xrec, qloss = self(x)
 
         distill_loss = None
+
         optimizer_idx = 0
-
-        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x, xrec, mask, optimizer_idx, self.global_step, last_layer=None, 
-                                        cond=None, split="train")
-
-        self.log("train/ae_loss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
+        aeloss, log_dict_ae = self.loss(qloss, distill_loss, x, xrec, optimizer_idx, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.log("train/aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
         self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
         aeloss = aeloss / self.grad_acc_steps
@@ -169,12 +163,18 @@ class VQModel(pl.LightningModule):
             opt_ae.step()
             opt_ae.zero_grad()
             scheduler_ae_warmup.step()
+
+    def get_last_layer(self):
+        try:
+            return self.decoder.conv_out.weight
+        except:
+            return None
         
     def log_images(self, batch, **kwargs):
         log = dict()
         x = self.get_input(batch)
         x = x.to(self.device)
-        xrec, _, _ = self(x)
+        xrec, _ = self(x)
         log["inputs"] = x
         log["reconstructions"] = xrec
         return log

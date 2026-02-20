@@ -3,7 +3,7 @@ import timm
 import random
 from torch import nn
 
-from modules.masking import mae_random_masking
+from modules.masking import mask_tokens
 from typing import Tuple, Union
 from timm.models.vision_transformer import VisionTransformer
 
@@ -25,16 +25,16 @@ class VisionTransformerWithPretrainedWts(VisionTransformer):
         x = self.patch_embed.proj(x)                    
         x = x.flatten(2).transpose(1, 2)   # [B, N, D]
 
-        x = x + self.pos_embed.to(x.device)
-
-        x, mask, ids_restore = mae_random_masking(x, mask_ratio)
+        x_masked, masks, masked_indices = mask_tokens(x, mask_ratio, self.mask_token) 
+        print("Shape of masked version of img : ", x_masked.shape)
+        x = x_masked + self.pos_embed.to(x.device)
 
         for blk in self.blocks:
             x = blk(x)
 
         x = self.norm(x)
 
-        return x, mask, ids_restore
+        return x
 
 class Encoder(nn.Module):
     def __init__(
@@ -98,13 +98,7 @@ class Encoder(nn.Module):
         print(unexpected)
     
     def forward(self, img: torch.FloatTensor) -> torch.FloatTensor:
-        h, mask, ids_restore = self.encoder.forward_features(img, mask_ratio=self.mask_ratio) # [B, N, D]
-        
-        B = mask.shape[0]
-        H_patch = W_patch = self.image_size // self.patch_size
-        mask_2d = mask.view(B, H_patch, W_patch)
-        pixel_mask = mask_2d.repeat_interleave(self.patch_size, dim=1)\
-                     .repeat_interleave(self.patch_size, dim=2)
-        pixel_mask = pixel_mask.unsqueeze(1)  # [B, 1, 256, 256]
-        
-        return h, pixel_mask, ids_restore
+        h = self.encoder.forward_features(img, self.mask_ratio)
+        h = h.permute(0, 2, 1).contiguous()
+        h = h.reshape(h.shape[0], -1, img.size(2)//self.patch_size, img.size(3)//self.patch_size)
+        return h

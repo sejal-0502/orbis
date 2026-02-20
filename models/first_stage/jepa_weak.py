@@ -108,14 +108,19 @@ class Jepa(pl.LightningModule):
         return rec
         
     def forward(self, input):
+        alpha = 0.1
         cb_losses, context = self.context_encode(input)
         with torch.no_grad():
             target = self.target_encode(input)
-        rec = self.decode(context.detach())
+        context_enc = context * alpha + context.detach() * (1 - alpha) 
+        rec = self.decode(context_enc)
         return rec, (cb_losses['quantization_loss'], cb_losses['entropy_loss']), context, target
     
     def l1_loss(self, context_feats, target_feats):
         return F.l1_loss(context_feats, target_feats)
+    
+    def grad_norm(self, params):
+        return sum(p.grad.norm().item()**2 for p in params if p.grad is not None) ** 0.5
 
     @torch.no_grad()
     def update_target_encoder(self):
@@ -195,6 +200,15 @@ class Jepa(pl.LightningModule):
         aeloss = aeloss + l1_loss
         aeloss = aeloss / self.grad_acc_steps
         self.manual_backward(aeloss) 
+
+        # Encoder gradient (includes both L1 + alpha-scaled recon)
+        encoder_grad_norm = self.grad_norm(self.context_encoder.parameters())
+        self.log("train/encoder_grad_norm", encoder_grad_norm, prog_bar=True, logger=True)
+
+        # Decoder gradient (full recon)
+        decoder_grad_norm = self.grad_norm(self.decoder.parameters())
+        self.log("train/decoder_grad_norm", decoder_grad_norm, prog_bar=True, logger=True)
+
         if (batch_idx+1) % self.grad_acc_steps == 0:
             opt_ae.step()
             opt_ae.zero_grad()

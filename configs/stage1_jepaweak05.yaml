@@ -2,7 +2,7 @@ model:
   base_learning_rate: 8.0e-07
   adjust_learning_rate: true
   static_graph: true
-  target: models.first_stage.jepa.Jepa
+  target: models.first_stage.jepa_weak.Jepa
   params:
     monitor: val/rec_loss
     grad_acc_steps: 16

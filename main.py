@@ -319,6 +319,8 @@ if __name__ == "__main__":
         trainer_kwargs["profiler"] = profiler
 
     trainer_kwargs["callbacks"] = get_callbacks(opt, logdir, ckptdir, config, lightning_config, now)
+    if opt.tsne_epoch_frequency is not None and opt.tsne_epoch_frequency > 0:
+        trainer_kwargs["callbacks"].append(CodebookTSNELogger(epoch_frequency=opt.tsne_epoch_frequency))
         
     trainer = Trainer(**trainer_kwargs)
     

@@ -95,11 +95,12 @@ class VQLPIPSWithDiscriminator(nn.Module):
         optimizer_idx, global_step, last_layer=None, cond=None, split="train"
     ):
         codebook_loss, entropy_loss = codebook_entropy_losses
+        gan_loss = None
 
         if optimizer_idx == 0:
             # Reconstruction and Perceptual Loss
-            rec_loss = torch.tensor(0.0, device=distill_loss.device)
-            p_loss = torch.tensor(0.0, device=distill_loss.device)
+            # rec_loss = torch.tensor(0.0, device=distill_loss.device)
+            # p_loss = torch.tensor(0.0, device=distill_loss.device)
             
             if isinstance(inputs, list):
                 for idx, (input, recon) in enumerate(zip(inputs, reconstructions)):
@@ -119,28 +120,32 @@ class VQLPIPSWithDiscriminator(nn.Module):
             nll_loss = rec_loss + self.perceptual_weight * p_loss
 
             reconstruction = reconstructions[0] if isinstance(reconstructions, list) else reconstructions
-            if self.disc_conditional and cond is not None:
-                logits_fake = self.discriminator(torch.cat((reconstruction, cond), dim=1))
-            else:
-                logits_fake = self.discriminator(reconstruction)
+            
+            if gan_loss is not None:
+                if self.disc_conditional and cond is not None:
+                    logits_fake = self.discriminator(torch.cat((reconstruction, cond), dim=1))
+                else:
+                    logits_fake = self.discriminator(reconstruction)
 
-            g_loss = -torch.mean(logits_fake)
+                g_loss = -torch.mean(logits_fake)
 
-            if self.adaptive_disc_weight:
-                try:
-                    d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer)
-                except RuntimeError:
-                    assert not self.training
-                    d_weight = torch.tensor(0.0, device=distill_loss.device)
-            else:
-                d_weight = self.disc_weight
+                if self.adaptive_disc_weight:
+                    try:
+                        d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer)
+                    except RuntimeError:
+                        assert not self.training
+                        d_weight = torch.tensor(0.0, device=distill_loss.device)
+                else:
+                    d_weight = self.disc_weight
 
-            disc_factor = adopt_weight(self.disc_factor, global_step, self.discriminator_iter_start)
-            loss = nll_loss + d_weight * disc_factor * g_loss
+                disc_factor = adopt_weight(self.disc_factor, global_step, self.discriminator_iter_start)
+                loss = nll_loss + d_weight * disc_factor * g_loss
+                
+            loss = nll_loss
             loss += self.codebook_weight * codebook_loss.mean()
             if entropy_loss is not None:
                 loss += self.entropy_loss_weight * entropy_loss.mean()
-            loss += self.distill_loss_weight * distill_loss.mean()
+            # loss += self.distill_loss_weight * distill_loss.mean()
 
             log = {
                 f"{split}/total_loss": loss.detach().mean(),
@@ -148,9 +153,9 @@ class VQLPIPSWithDiscriminator(nn.Module):
                 f"{split}/nll_loss": nll_loss.detach().mean(),
                 f"{split}/rec_loss": rec_loss.detach().mean(),
                 f"{split}/p_loss": p_loss.detach().mean(),
-                f"{split}/d_weight": d_weight,
-                f"{split}/disc_factor": torch.tensor(disc_factor),
-                f"{split}/g_loss": g_loss.detach().mean(),
+                # f"{split}/d_weight": d_weight,
+                # f"{split}/disc_factor": torch.tensor(disc_factor),
+                # f"{split}/g_loss": g_loss.detach().mean(),
             }
             if entropy_loss is not None:
                 log[f"{split}/entropy_loss"] = entropy_loss.detach().mean()
@@ -158,30 +163,31 @@ class VQLPIPSWithDiscriminator(nn.Module):
 
             return loss, log
 
-        elif optimizer_idx == 1:
-            if isinstance(inputs, list):
-                inputs = inputs[0]
-                reconstructions = reconstructions[0]
-            # Discriminator 
-            if self.disc_conditional and cond is not None:
-                real = torch.cat((inputs.detach(), cond), dim=1)
-                fake = torch.cat((reconstructions.detach(), cond), dim=1)
-            else:
-                real = inputs.detach()
-                fake = reconstructions.detach()
+        if gan_loss is not None:
+            if optimizer_idx == 1:
+                if isinstance(inputs, list):
+                    inputs = inputs[0]
+                    reconstructions = reconstructions[0]
+                # Discriminator 
+                if self.disc_conditional and cond is not None:
+                    real = torch.cat((inputs.detach(), cond), dim=1)
+                    fake = torch.cat((reconstructions.detach(), cond), dim=1)
+                else:
+                    real = inputs.detach()
+                    fake = reconstructions.detach()
 
-            logits_real = self.discriminator(real)
-            logits_fake = self.discriminator(fake)
+                logits_real = self.discriminator(real)
+                logits_fake = self.discriminator(fake)
 
-            disc_factor = adopt_weight(self.disc_factor, global_step, self.discriminator_iter_start)
-            d_loss = disc_factor * self.disc_loss(logits_real, logits_fake)
+                disc_factor = adopt_weight(self.disc_factor, global_step, self.discriminator_iter_start)
+                d_loss = disc_factor * self.disc_loss(logits_real, logits_fake)
 
-            log = {
-                f"{split}/disc_loss": d_loss.detach().mean(),
-                f"{split}/logits_real": logits_real.detach().mean(),
-                f"{split}/logits_fake": logits_fake.detach().mean(),
-            }
-            return d_loss, log
+                log = {
+                    f"{split}/disc_loss": d_loss.detach().mean(),
+                    f"{split}/logits_real": logits_real.detach().mean(),
+                    f"{split}/logits_fake": logits_fake.detach().mean(),
+                }
+                return d_loss, log
 
 class MAEReconstructionLoss(nn.Module):
     def __init__(
